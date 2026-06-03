@@ -1,0 +1,33 @@
+<resources>
+    <string name="app_name">简阅</string>
+    <string name="bookshelf">书架</string>
+    <string name="library">书库</string>
+    <string name="profile">我的</string>
+    <string name="add_book">添加书籍</string>
+    <string name="import_local">本机导入</string>
+    <string name="wlan_transfer">WLAN传书</string>
+    <string name="empty_bookshelf">书架空空如也</string>
+    <string name="click_to_add">点击右上角+号添加书籍</string>
+    <string name="reading_preferences">阅读偏好</string>
+    <string name="data_management">数据管理</string>
+    <string name="clear_cache">清除缓存</string>
+    <string name="about">关于</string>
+    <string name="version">版本号 v1.0.0</string>
+    <string name="add_to_shelf">+加入书架</string>
+    <string name="already_in_shelf">已在书架</string>
+    <string name="page_mode">翻页方式</string>
+    <string name="font_size">字号</string>
+    <string name="line_spacing">行间距</string>
+    <string name="background_color">背景色</string>
+    <string name="save">保存</string>
+    <string name="cancel">取消</string>
+    <string name="confirm">确定</string>
+    <string name="clear_cache_confirm">确定要清除所有缓存数据吗？此操作不可恢复。</string>
+    <string name="modify_nickname">修改昵称</string>
+    <string name="waiting_connection">等待连接...</string>
+    <string name="transferring">正在传输</string>
+    <string name="transfer_complete">接收完成</string>
+    <string name="returning_bookshelf">正在返回书架...</string>
+    <string name="click_to_copy">点击地址可复制</string>
+    <string name="connect_same_wifi">请确保电脑与手机连接同一WiFi网络</string>
+</resources>
