@@ -121,7 +121,7 @@ fun MainApp(storageManager: StorageManager) {
             title = selectedLibraryBook!!.title,
             author = selectedLibraryBook!!.author,
             cover = selectedLibraryBook!!.cover,
-            filePath = "",
+            filePath = selectedLibraryBook!!.filePath,
             format = BookFormat.TXT,
             progress = 0.0,
             lastReadTime = System.currentTimeMillis().toString()

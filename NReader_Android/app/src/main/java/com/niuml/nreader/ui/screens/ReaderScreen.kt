@@ -85,6 +85,7 @@ import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
 import android.util.Log
+import com.niuml.nreader.service.ApiService
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -227,35 +228,19 @@ fun ReaderScreen(
                 }
             }
 
-            if (isLoading || !readerState.isPaginationReady) {
+            if (isLoading) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier.padding(32.dp)
                     ) {
-                        if (readerState.isCalculatingPages) {
-                            androidx.compose.material3.LinearProgressIndicator(
-                                progress = readerState.calculationProgress.toFloat(),
-                                color = Primary,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 8.dp)
-                            )
-                            Text(
-                                text = "计算中 ${(readerState.calculationProgress * 100).toInt()}%",
-                                fontSize = 16.sp,
-                                color = textColor,
-                                modifier = Modifier.padding(top = 8.dp)
-                            )
-                        } else {
-                            CircularProgressIndicator(color = Primary)
-                            Text(
-                                text = "加载中...",
-                                fontSize = 16.sp,
-                                color = textColor,
-                                modifier = Modifier.padding(top = 16.dp)
-                            )
-                        }
+                        CircularProgressIndicator(color = Primary)
+                        Text(
+                            text = "加载中...",
+                            fontSize = 16.sp,
+                            color = textColor,
+                            modifier = Modifier.padding(top = 16.dp)
+                        )
                     }
                 }
             } else {
@@ -341,6 +326,7 @@ fun ReaderScreen(
                     BottomBar(
                         currentPage = readerState.currentPage,
                         totalPages = readerState.totalPages,
+                        isEstimated = readerState.isEstimatedTotalPages,
                         textColor = textColor
                     ) {
                         showJumpDialog = true
@@ -397,6 +383,7 @@ private suspend fun loadBookContentSuspend(book: Book, storageManager: StorageMa
     return withContext(Dispatchers.IO) {
         val cachedContent = storageManager.loadBookContent(book.id)
         if (cachedContent != null) {
+            Log.d("ReaderScreen", "Loaded content from cache for book: ${book.id}")
             return@withContext cachedContent
         }
 
@@ -406,12 +393,28 @@ private suspend fun loadBookContentSuspend(book: Book, storageManager: StorageMa
                 val result = loader.loadSync()
                 val content = result.content
                 storageManager.saveBookContent(book.id, content)
+                Log.d("ReaderScreen", "Loaded content from local file: ${book.filePath}")
                 return@withContext content
             } catch (e: Exception) {
                 return@withContext "读取文件失败: ${e.message}"
             }
         }
-        return@withContext ""
+        
+        Log.d("ReaderScreen", "Trying to load content from API for book: ${book.id}")
+        try {
+            val response = ApiService.getNovelContent(book.id.toInt())
+            if (response != null && response.content.isNotEmpty()) {
+                storageManager.saveBookContent(book.id, response.content)
+                Log.d("ReaderScreen", "Loaded content from API for book: ${book.id}")
+                return@withContext response.content
+            } else {
+                Log.d("ReaderScreen", "API response is empty for book: ${book.id}")
+                return@withContext "无法获取小说内容"
+            }
+        } catch (e: Exception) {
+            Log.e("ReaderScreen", "Failed to load content from API", e)
+            return@withContext "获取内容失败: ${e.message}"
+        }
     }
 }
 
@@ -436,6 +439,18 @@ private suspend fun loadBookContent(
                 onContentLoaded(content)
             } catch (e: Exception) {
                 onContentLoaded("读取文件失败: ${e.message}")
+            }
+        } else {
+            try {
+                val response = ApiService.getNovelContent(book.id.toInt())
+                if (response != null && response.content.isNotEmpty()) {
+                    storageManager.saveBookContent(book.id, response.content)
+                    onContentLoaded(response.content)
+                } else {
+                    onContentLoaded("无法获取小说内容")
+                }
+            } catch (e: Exception) {
+                onContentLoaded("获取内容失败: ${e.message}")
             }
         }
     }
@@ -581,7 +596,7 @@ private fun Toolbar(
 }
 
 @Composable
-private fun BottomBar(currentPage: Int, totalPages: Int, textColor: Color, onPageClick: () -> Unit) {
+private fun BottomBar(currentPage: Int, totalPages: Int, isEstimated: Boolean, textColor: Color, onPageClick: () -> Unit) {
     val context = LocalContext.current
     val currentTime = remember { mutableStateOf("") }
     val batteryLevel = remember { mutableStateOf(0) }
@@ -607,7 +622,7 @@ private fun BottomBar(currentPage: Int, totalPages: Int, textColor: Color, onPag
         verticalAlignment = Alignment.Bottom
     ) {
         Text(
-            text = "$currentPage/$totalPages",
+            text = if (isEstimated) "$currentPage/~$totalPages" else "$currentPage/$totalPages",
             fontSize = 14.sp,
             color = textColor,
             modifier = Modifier.clickable { onPageClick() }

@@ -20,6 +20,7 @@ class ReaderState(
 ) {
     var currentPage by mutableIntStateOf(1)
     var totalPages by mutableIntStateOf(1)
+    var isEstimatedTotalPages by mutableStateOf(false)
     var currentChapterIndex by mutableIntStateOf(0)
     var chapters by mutableStateOf<List<ChapterParser.Chapter>>(emptyList())
     var progress by mutableStateOf(0.0)
@@ -63,6 +64,7 @@ class ReaderState(
             totalPages = cached.totalPages
             isPaginationReady = true
             isFullyCalculated = true
+            isEstimatedTotalPages = false
             
             if (savedPage > 0 && savedPage <= totalPages) {
                 currentPage = savedPage
@@ -71,7 +73,7 @@ class ReaderState(
             Log.d("ReaderState", "INSTANT OPEN from cache! Page: $currentPage/$totalPages")
             return
         }
-        Log.d("ReaderState", "No cache found, starting calculation")
+        Log.d("ReaderState", "No cache found, starting fast initialization")
         
         backgroundScope.launch {
             ensureContentLoadedSuspend()
@@ -82,6 +84,18 @@ class ReaderState(
                     isPaginationReady = true
                 }
                 return@launch
+            }
+            
+            withContext(Dispatchers.Main) {
+                totalPages = estimateTotalPages()
+                isEstimatedTotalPages = true
+                isPaginationReady = true
+                
+                if (savedPage > 0 && savedPage <= totalPages) {
+                    currentPage = savedPage
+                }
+                updateProgress()
+                Log.d("ReaderState", "Fast initialization complete, estimated pages: $totalPages")
             }
             
             isCalculatingPages = true
@@ -132,31 +146,30 @@ class ReaderState(
                     }
                     
                     calculationProgress = pos.toDouble() / contentLength.toDouble()
+                    
+                    withContext(Dispatchers.Main) {
+                        pageStarts = newPageStarts.toMutableList()
+                        totalPages = newPageStarts.size
+                    }
                 }
                 
                 withContext(Dispatchers.Main) {
                     pageStarts = newPageStarts
                     totalPages = newPageStarts.size
-                    isPaginationReady = true
                     isFullyCalculated = true
+                    isEstimatedTotalPages = false
                     
-                    if (savedPage > 0 && savedPage <= totalPages) {
-                        currentPage = savedPage
-                    } else if (currentPage > totalPages) {
+                    if (currentPage > totalPages) {
                         currentPage = totalPages
                     }
                     updateProgress()
                 }
                 
                 saveCache(cacheKey, PaginationCache(newPageStarts, newPageStarts.size))
-                Log.d("ReaderState", "Cache saved successfully")
+                Log.d("ReaderState", "Cache saved successfully, total pages: ${newPageStarts.size}")
                 
             } catch (e: Exception) {
                 Log.e("ReaderState", "Error calculating pages", e)
-                withContext(Dispatchers.Main) {
-                    totalPages = estimateTotalPages()
-                    isPaginationReady = true
-                }
             } finally {
                 isCalculatingPages = false
                 calculationProgress = 1.0
@@ -317,18 +330,36 @@ class ReaderState(
     }
 
     fun goToPage(page: Int) {
-        if (page in 1..totalPages) {
-            currentPage = page
-            updateProgress()
-            saveProgress()
+        if (!isFullyCalculated) {
+            val maxEstimatedPage = (content.length / 500) + 1
+            if (page in 1..maxEstimatedPage) {
+                currentPage = page
+                updateProgress()
+                saveProgress()
+            }
+        } else {
+            if (page in 1..totalPages) {
+                currentPage = page
+                updateProgress()
+                saveProgress()
+            }
         }
     }
 
     fun nextPage() {
-        if (currentPage < totalPages) {
-            currentPage++
-            updateProgress()
-            saveProgress()
+        if (!isFullyCalculated) {
+            val maxEstimatedPage = (content.length / 500) + 1
+            if (currentPage < maxEstimatedPage) {
+                currentPage++
+                updateProgress()
+                saveProgress()
+            }
+        } else {
+            if (currentPage < totalPages) {
+                currentPage++
+                updateProgress()
+                saveProgress()
+            }
         }
     }
 
@@ -365,7 +396,11 @@ class ReaderState(
     }
 
     fun getCurrentPageText(): String {
-        if (content.isEmpty() || pageStarts.isEmpty()) return ""
+        if (content.isEmpty()) return ""
+        
+        if (pageStarts.isEmpty() || !isFullyCalculated) {
+            return calculatePageTextRealtime(currentPage)
+        }
         
         val startPos = pageStarts.getOrNull(currentPage - 1) ?: 0
         val endPos = pageStarts.getOrNull(currentPage) ?: content.length
@@ -375,6 +410,79 @@ class ReaderState(
         }
         
         return content.substring(startPos, endPos)
+    }
+    
+    private fun calculatePageTextRealtime(page: Int): String {
+        if (lastFontSize == 0 || lastWidth == 0f || lastHeight == 0f) {
+            return content.substring(0, minOf(500, content.length))
+        }
+        
+        val textPaint = android.text.TextPaint().apply {
+            textSize = lastFontSize * lastDensity
+            isAntiAlias = true
+        }
+        
+        val availableWidth = lastWidth - 32 * lastDensity
+        val singleLineHeight = textPaint.fontMetrics.descent - textPaint.fontMetrics.ascent
+        val availableHeight = lastHeight - 32 * lastDensity - singleLineHeight
+        
+        var currentPos = 0
+        
+        for (pageIndex in 1 until page) {
+            if (currentPos >= content.length) break
+            
+            val chunkSize = minOf(32000, content.length - currentPos)
+            val textChunk = content.substring(currentPos, currentPos + chunkSize)
+            
+            val layout = android.text.StaticLayout.Builder.obtain(
+                textChunk, 0, textChunk.length, textPaint, availableWidth.toInt()
+            ).build()
+            
+            val lineCount = layout.lineCount
+            if (lineCount <= 0) break
+            
+            var pageLines = 0
+            for (i in 0 until lineCount) {
+                if (layout.getLineBottom(i) <= availableHeight) {
+                    pageLines = i + 1
+                } else {
+                    break
+                }
+            }
+            
+            if (pageLines == 0 && lineCount > 0) pageLines = 1
+            
+            val pageEnd = layout.getLineEnd(pageLines - 1)
+            currentPos += pageEnd
+        }
+        
+        if (currentPos >= content.length) return ""
+        
+        val chunkSize = minOf(32000, content.length - currentPos)
+        val textChunk = content.substring(currentPos, currentPos + chunkSize)
+        
+        val layout = android.text.StaticLayout.Builder.obtain(
+            textChunk, 0, textChunk.length, textPaint, availableWidth.toInt()
+        ).build()
+        
+        val lineCount = layout.lineCount
+        if (lineCount <= 0) return ""
+        
+        var pageLines = 0
+        for (i in 0 until lineCount) {
+            if (layout.getLineBottom(i) <= availableHeight) {
+                pageLines = i + 1
+            } else {
+                break
+            }
+        }
+        
+        if (pageLines == 0 && lineCount > 0) pageLines = 1
+        
+        val pageEnd = layout.getLineEnd(pageLines - 1)
+        val endPos = currentPos + pageEnd
+        
+        return content.substring(currentPos, minOf(endPos, content.length))
     }
 
     private fun updateProgress() {
