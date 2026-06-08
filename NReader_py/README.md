@@ -1,13 +1,14 @@
-# NReader Python Backend
+# NReader 后端服务
 
-小说阅读器后端服务，用于读取本地小说文件并提供API接口。
+局域网小说阅读器后端服务，使用 Python + FastAPI 开发。
 
 ## 功能特性
 
-- 读取本地小说文件（支持 .txt 格式）
-- 提供小说列表 API
-- 提供小说内容 API
-- 支持跨域访问（CORS）
+- 自动扫描书籍目录（支持 .txt 和 .epub 格式）
+- 书籍元数据提取（书名、作者、章节、总字数等）
+- RESTful API 接口
+- WiFi 传书功能
+- 跨域支持
 
 ## 安装依赖
 
@@ -15,102 +16,54 @@
 pip install -r requirements.txt
 ```
 
-## 运行服务
-
-```bash
-python app.py
-```
-
-服务将在 http://localhost:5000 启动
-
-## API 接口
-
-### 1. 获取小说列表
-
-```
-GET /api/novels
-```
-
-返回所有可用的小说列表。
-
-**响应示例：**
-```json
-[
-  {
-    "id": "local_傲世丹神",
-    "title": "傲世丹神",
-    "author": "本地文件",
-    "cover": "",
-    "isInShelf": false,
-    "filePath": "file:///D:/temp/傲世丹神.txt"
-  }
-]
-```
-
-### 2. 获取小说内容
-
-```
-GET /api/novel/<novel_id>
-```
-
-根据小说ID获取小说内容。
-
-**参数：**
-- `novel_id`: 小说ID（如 `local_傲世丹神`）
-
-**响应示例：**
-```json
-{
-  "id": "local_傲世丹神",
-  "title": "傲世丹神",
-  "content": "小说内容..."
-}
-```
-
-### 3. 健康检查
-
-```
-GET /api/health
-```
-
-检查服务是否正常运行。
-
-**响应示例：**
-```json
-{
-  "status": "ok",
-  "message": "NReader Backend is running"
-}
-```
-
 ## 配置
 
-默认小说目录：`D:/temp`
+编辑 `config.yaml` 文件：
 
-如需修改，编辑 `app.py` 中的 `NOVELS_DIR` 变量。
+```yaml
+# 书籍扫描目录
+books_dir: D:/temp
 
-## 前端集成
+# 服务监听端口
+port: 8000
 
-在前端代码中，将小说列表的获取方式从本地文件改为调用后端API：
+# 数据库路径
+db_path: nreader.db
 
-```typescript
-// 替换原有的 library.ts 数据
-async function fetchNovels() {
-  const response = await fetch('http://localhost:5000/api/novels')
-  const novels = await response.json()
-  return novels
-}
+# 支持的文件格式
+supported_formats:
+  - .txt
+  - .epub
 
-// 获取小说内容
-async function fetchNovelContent(novelId: string) {
-  const response = await fetch(`http://localhost:5000/api/novel/${novelId}`)
-  const data = await response.json()
-  return data.content
-}
+# 上传文件保存目录
+upload_dir: uploaded
 ```
 
-## 注意事项
+## 运行
 
-- 确保 `D:/temp` 目录存在且包含 .txt 格式的小说文件
-- 服务默认监听所有网络接口（0.0.0.0），可在局域网内访问
-- 开发模式下启用 debug，生产环境请关闭
+```bash
+python main.py
+```
+
+服务启动后会自动扫描配置的书籍目录。
+
+## API 文档
+
+启动服务后访问 `http://localhost:8000/docs` 查看完整的 API 文档。
+
+### 主要接口
+
+- `GET /api/books` - 获取书籍列表（支持分页、排序）
+- `GET /api/books/{id}` - 获取书籍详情
+- `GET /api/books/search?q=关键词` - 搜索书籍
+- `GET /api/chapters/{book_id}/{chapter_index}` - 获取章节内容
+- `POST /api/scan` - 手动触发扫描
+- `POST /api/upload` - 上传书籍文件
+- `GET /upload` - WiFi 传书网页界面
+
+## WiFi 传书
+
+1. 确保手机和电脑在同一局域网
+2. 在浏览器访问 `http://电脑IP:8000/upload`
+3. 选择 .txt 或 .epub 文件上传
+4. 上传的书籍会自动添加到书库

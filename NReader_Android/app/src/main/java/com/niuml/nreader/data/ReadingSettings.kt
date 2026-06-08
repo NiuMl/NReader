@@ -18,6 +18,14 @@ enum class LineSpacing {
     COMPACT, NORMAL, RELAXED
 }
 
+fun LineSpacing.toFloat(): Float {
+    return when (this) {
+        LineSpacing.COMPACT -> 1.2f
+        LineSpacing.NORMAL -> 1.5f
+        LineSpacing.RELAXED -> 2.0f
+    }
+}
+
 enum class PageMode {
     SCROLL, SLIDE, CLICK
 }

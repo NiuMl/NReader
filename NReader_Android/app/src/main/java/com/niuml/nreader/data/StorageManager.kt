@@ -12,11 +12,21 @@ import java.nio.charset.Charset
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 
+data class ChapterInfo(
+    val title: String,
+    val startPos: Int,
+    val endPos: Int,
+    val isVolume: Boolean = false,
+    val detected: Boolean = false
+)
+
 class StorageManager(private val context: Context) {
     private val prefs: SharedPreferences = context.getSharedPreferences("NReader", Context.MODE_PRIVATE)
     private val json = Json { prettyPrint = true }
     private val cacheDir = context.cacheDir
     private val filesDir = context.filesDir
+    
+    fun getSharedPreferences(): SharedPreferences = prefs
     
     fun saveBooks(books: List<Book>) {
         val jsonString = json.encodeToString(books)
@@ -58,6 +68,8 @@ class StorageManager(private val context: Context) {
         
         // 删除书籍内容文件
         File(cacheDir, "book_${bookId}.txt").delete()
+        // 删除章节缓存文件
+        deleteChapters(bookId)
         
         // 删除上传目录中的源文件（如果存在）
         if (bookToDelete != null) {
@@ -283,10 +295,76 @@ class StorageManager(private val context: Context) {
         return garbageChars.toDouble() / totalChars < 0.1
     }
     
-    // 生成书籍ID
+    // 生成书籍ID - 使用文件名的稳定哈希，不包含时间戳
     private fun generateBookId(fileName: String): String {
-        val input = "$fileName-${System.currentTimeMillis()}"
-        val bytes = MessageDigest.getInstance("MD5").digest(input.toByteArray())
+        val input = fileName
+        val bytes = MessageDigest.getInstance("MD5").digest(input.toByteArray(Charsets.UTF_8))
         return bytes.joinToString("") { "%02x".format(it) }
+    }
+
+    fun saveChapters(bookId: String, chapters: List<ChapterInfo>) {
+        try {
+            val jsonString = json.encodeToString(chapters)
+            val file = File(cacheDir, "chapters_${bookId}.json")
+            file.writeText(jsonString)
+            Log.d("StorageManager", "Chapters saved for $bookId: ${chapters.size} chapters")
+        } catch (e: Exception) {
+            Log.e("StorageManager", "Failed to save chapters: ${e.message}")
+        }
+    }
+
+    fun loadChapters(bookId: String): List<ChapterInfo>? {
+        return try {
+            val file = File(cacheDir, "chapters_${bookId}.json")
+            if (file.exists()) {
+                val jsonString = file.readText()
+                val chapters = json.decodeFromString<List<ChapterInfo>>(jsonString)
+                Log.d("StorageManager", "Loaded ${chapters.size} chapters for $bookId")
+                chapters
+            } else {
+                null
+            }
+        } catch (e: Exception) {
+            Log.e("StorageManager", "Failed to load chapters: ${e.message}")
+            null
+        }
+    }
+
+    fun hasChapters(bookId: String): Boolean {
+        return File(cacheDir, "chapters_${bookId}.json").exists()
+    }
+
+    fun deleteChapters(bookId: String) {
+        val file = File(cacheDir, "chapters_${bookId}.json")
+        if (file.exists()) {
+            file.delete()
+            Log.d("StorageManager", "Deleted chapters for $bookId")
+        }
+    }
+
+    fun saveBookMetadata(bookId: String, metadata: Map<String, String>) {
+        try {
+            val jsonString = json.encodeToString(metadata)
+            val file = File(cacheDir, "metadata_${bookId}.json")
+            file.writeText(jsonString)
+            Log.d("StorageManager", "Metadata saved for $bookId")
+        } catch (e: Exception) {
+            Log.e("StorageManager", "Failed to save metadata: ${e.message}")
+        }
+    }
+
+    fun loadBookMetadata(bookId: String): Map<String, String>? {
+        return try {
+            val file = File(cacheDir, "metadata_${bookId}.json")
+            if (file.exists()) {
+                val jsonString = file.readText()
+                json.decodeFromString<Map<String, String>>(jsonString)
+            } else {
+                null
+            }
+        } catch (e: Exception) {
+            Log.e("StorageManager", "Failed to load metadata: ${e.message}")
+            null
+        }
     }
 }

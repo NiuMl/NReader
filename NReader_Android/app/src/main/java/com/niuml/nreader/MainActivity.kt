@@ -30,9 +30,9 @@ import com.niuml.nreader.ui.screens.ReaderScreen
 import com.niuml.nreader.ui.screens.ReadingSettingsScreen
 import com.niuml.nreader.ui.screens.WlanTransferScreen
 import com.niuml.nreader.ui.screens.LocalImportScreen
-import com.niuml.nreader.ui.screens.LibraryBook
 import com.niuml.nreader.ui.screens.NetworkConfigDialog
 import com.niuml.nreader.ui.screens.SplashScreen
+import com.niuml.nreader.ui.viewmodel.LibraryViewModel
 import com.niuml.nreader.ui.theme.NReaderTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -66,7 +66,7 @@ fun MainApp(storageManager: StorageManager) {
     var showWlanTransfer by remember { mutableStateOf(false) }
     var showLocalImport by remember { mutableStateOf(false) }
     var showNetworkConfig by remember { mutableStateOf(false) }
-    var selectedLibraryBook by remember { mutableStateOf<LibraryBook?>(null) }
+    var selectedLibraryBook by remember { mutableStateOf<LibraryViewModel.LibraryBook?>(null) }
     var loginStatus by remember { mutableStateOf("") }
 
     LaunchedEffect(Unit) {
@@ -74,6 +74,8 @@ fun MainApp(storageManager: StorageManager) {
         ApiService.setBaseUrl(host, port)
         
         val (username, password) = storageManager.loadLoginConfig()
+        ApiService.setCredentials(username, password)
+        
         if (username.isNotEmpty() && password.isNotEmpty()) {
             try {
                 val response = ApiService.login(username, password)
@@ -90,6 +92,8 @@ fun MainApp(storageManager: StorageManager) {
 
     fun handleLogin() {
         val (username, password) = storageManager.loadLoginConfig()
+        ApiService.setCredentials(username, password)
+        
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val response = ApiService.login(username, password)

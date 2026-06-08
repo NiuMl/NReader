@@ -29,7 +29,8 @@ def init_db():
             title TEXT NOT NULL,
             author TEXT DEFAULT '本地文件',
             file_path TEXT NOT NULL,
-            cover TEXT DEFAULT ''
+            cover TEXT DEFAULT '',
+            category TEXT DEFAULT ''
         )
     ''')
     
@@ -37,9 +38,19 @@ def init_db():
         for file in NOVELS_DIR.glob('*.txt'):
             file_path_str = str(file).replace("\\", "/")
             cursor.execute('''
-                INSERT INTO novels (title, file_path)
-                VALUES (?, ?)
-            ''', (file.stem, file_path_str))
+                INSERT INTO novels (title, file_path, category)
+                VALUES (?, ?, ?)
+            ''', (file.stem, file_path_str, '未分类'))
+        
+        for category_dir in NOVELS_DIR.iterdir():
+            if category_dir.is_dir():
+                category_name = category_dir.name
+                for file in category_dir.glob('*.txt'):
+                    file_path_str = str(file).replace("\\", "/")
+                    cursor.execute('''
+                        INSERT INTO novels (title, file_path, category)
+                        VALUES (?, ?, ?)
+                    ''', (file.stem, file_path_str, category_name))
     
     cursor.execute('''CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -56,32 +67,70 @@ def init_db():
     conn.commit()
     conn.close()
 
-def get_novels_from_db(page=1, page_size=10, search=''):
+def get_categories_from_db():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        SELECT DISTINCT category 
+        FROM novels 
+        WHERE category != '' 
+        ORDER BY category
+    ''')
+    
+    categories = cursor.fetchall()
+    conn.close()
+    
+    return [{'id': category[0], 'name': category[0]} for category in categories]
+
+def get_novels_from_db(page=1, page_size=10, search='', category=''):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
     offset = (page - 1) * page_size
     
-    if search:
+    if search and category:
         cursor.execute('''
-            SELECT id, title, author, file_path, cover 
+            SELECT id, title, author, file_path, cover, category 
+            FROM novels 
+            WHERE title LIKE ? AND category = ?
+            ORDER BY id 
+            LIMIT ? OFFSET ?
+        ''', (f'%{search}%', category, page_size, offset))
+        novels = cursor.fetchall()
+        cursor.execute('SELECT COUNT(*) FROM novels WHERE title LIKE ? AND category = ?', (f'%{search}%', category))
+    elif search:
+        cursor.execute('''
+            SELECT id, title, author, file_path, cover, category 
             FROM novels 
             WHERE title LIKE ? 
             ORDER BY id 
             LIMIT ? OFFSET ?
         ''', (f'%{search}%', page_size, offset))
+        novels = cursor.fetchall()
+        cursor.execute('SELECT COUNT(*) FROM novels WHERE title LIKE ?', (f'%{search}%',))
+    elif category:
+        cursor.execute('''
+            SELECT id, title, author, file_path, cover, category 
+            FROM novels 
+            WHERE category = ?
+            ORDER BY id 
+            LIMIT ? OFFSET ?
+        ''', (category, page_size, offset))
+        novels = cursor.fetchall()
+        cursor.execute('SELECT COUNT(*) FROM novels WHERE category = ?', (category,))
     else:
         cursor.execute('''
-            SELECT id, title, author, file_path, cover 
+            SELECT id, title, author, file_path, cover, category 
             FROM novels 
             ORDER BY id 
             LIMIT ? OFFSET ?
         ''', (page_size, offset))
+        novels = cursor.fetchall()
+        cursor.execute('SELECT COUNT(*) FROM novels')
     
-    novels = cursor.fetchall()
-    
-    cursor.execute('SELECT COUNT(*) FROM novels WHERE title LIKE ?', (f'%{search}%',))
-    total = cursor.fetchone()[0]
+    count_result = cursor.fetchone()
+    total = count_result[0] if count_result else 0
     
     conn.close()
     
@@ -91,7 +140,8 @@ def get_novels_from_db(page=1, page_size=10, search=''):
         'author': novel[2],
         'cover': novel[4],
         'isInShelf': False,
-        'filePath': f'file:///{novel[3]}'
+        'filePath': f'file:///{novel[3]}',
+        'category': novel[5]
     } for novel in novels], total
 
 def validate_token(token):
@@ -140,6 +190,19 @@ def login():
     else:
         return jsonify({'code': 1, 'message': '用户名或密码错误'}), 401
 
+@app.route('/api/categories', methods=['GET'])
+def get_categories_list():
+    token = request.headers.get('Authorization')
+    if not token or not validate_token(token):
+        return jsonify({'code': 1, 'message': '未授权或token已过期'}), 401
+    
+    categories = get_categories_from_db()
+    
+    return jsonify({
+        'code': 0,
+        'categories': categories
+    })
+
 @app.route('/api/novels', methods=['GET'])
 def get_novels_list():
     token = request.headers.get('Authorization')
@@ -149,8 +212,9 @@ def get_novels_list():
     page = int(request.args.get('page', 1))
     page_size = int(request.args.get('page_size', 10))
     search = request.args.get('search', '')
+    category = request.args.get('category', '')
     
-    novels, total = get_novels_from_db(page, page_size, search)
+    novels, total = get_novels_from_db(page, page_size, search, category)
     
     return jsonify({
         'novels': novels,

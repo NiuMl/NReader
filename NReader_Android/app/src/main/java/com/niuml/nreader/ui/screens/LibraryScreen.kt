@@ -14,10 +14,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import androidx.compose.material.icons.Icons
@@ -34,9 +36,7 @@ import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -50,130 +50,71 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.niuml.nreader.R
 import com.niuml.nreader.data.Book
 import com.niuml.nreader.data.BookFormat
-import com.niuml.nreader.service.ApiService
 import com.niuml.nreader.ui.theme.Background
 import com.niuml.nreader.ui.theme.Primary
 import com.niuml.nreader.ui.theme.TextPrimary
 import com.niuml.nreader.ui.theme.TextSecondary
-
-data class LibraryBook(
-    val id: String,
-    val title: String,
-    val author: String,
-    val cover: String,
-    val filePath: String
-)
+import com.niuml.nreader.ui.viewmodel.LibraryViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LibraryScreen(
     shelfBookIds: List<String>,
-    onAddToShelf: (LibraryBook) -> Unit,
-    onBookClick: (LibraryBook) -> Unit
+    onAddToShelf: (LibraryViewModel.LibraryBook) -> Unit,
+    onBookClick: (LibraryViewModel.LibraryBook) -> Unit
 ) {
-    val isLoading = remember { mutableStateOf(true) }
-    val isLoadingMore = remember { mutableStateOf(false) }
-    val libraryBooks = remember { mutableStateListOf<LibraryBook>() }
-    val addedIds = remember { mutableStateListOf<String>() }
-    val errorMessage = remember { mutableStateOf("") }
-    val currentPage = remember { mutableStateOf(1) }
-    val hasMore = remember { mutableStateOf(true) }
-    val totalPages = remember { mutableStateOf(1) }
+    val viewModel: LibraryViewModel = viewModel()
     val listState = rememberLazyListState()
-    var lastScrollOffset by remember { mutableStateOf(0) }
     val coroutineScope = rememberCoroutineScope()
     
-    // 搜索相关状态
     var searchQuery by remember { mutableStateOf("") }
 
-    val loadFirstPage = remember {
-        suspend {
-            isLoading.value = true
-            try {
-                // 设置3秒超时
-                val response = withTimeoutOrNull(3000) {
-                    ApiService.getNovels(page = 1, pageSize = 10, search = searchQuery.trim())
-                }
-                
-                if (response != null) {
-                    val totalBooks = response.total
-                    totalPages.value = (totalBooks + 9) / 10
-                    hasMore.value = 1 < totalPages.value
-
-                    if (response.novels.isNotEmpty()) {
-                        libraryBooks.clear()
-                        libraryBooks.addAll(response.novels.map { novel ->
-                            LibraryBook(
-                                id = novel.id,
-                                title = novel.title,
-                                author = novel.author,
-                                cover = novel.cover,
-                                filePath = novel.filePath
-                            )
-                        })
-                        errorMessage.value = ""
-                    } else {
-                        libraryBooks.clear()
-                        errorMessage.value = "未找到相关小说"
-                    }
-                } else {
-                    errorMessage.value = "请求超时或无法连接到API\n请检查网络或启动NReader_py服务"
-                }
-            } catch (e: Exception) {
-                android.util.Log.e("LibraryScreen", "加载失败: ${e.message}")
-                errorMessage.value = "请求异常: ${e.message}"
-            }
-            isLoading.value = false
-        }
-    }
-
     LaunchedEffect(Unit) {
-        android.util.Log.d("LibraryScreen", "=== 开始加载第一页 ===")
-        loadFirstPage()
-    }
-
-    LaunchedEffect(listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index) {
-        val lastVisibleIndex = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-        val totalItems = libraryBooks.size
-
-        if (lastVisibleIndex >= totalItems - 2 && !isLoading.value && !isLoadingMore.value && hasMore.value && totalItems > 0) {
-            isLoadingMore.value = true
-            currentPage.value++
-            android.util.Log.d("LibraryScreen", "加载第 ${currentPage.value} 页")
-            try {
-                val response = withTimeoutOrNull(3000) {
-                    ApiService.getNovels(page = currentPage.value, pageSize = 10, search = searchQuery.trim())
-                }
-                if (response != null && response.novels.isNotEmpty()) {
-                    libraryBooks.addAll(response.novels.map { novel ->
-                        LibraryBook(
-                            id = novel.id,
-                            title = novel.title,
-                            author = novel.author,
-                            cover = novel.cover,
-                            filePath = novel.filePath
-                        )
-                    })
-                    val totalBooks = response.total
-                    totalPages.value = (totalBooks + 9) / 10
-                    hasMore.value = currentPage.value < totalPages.value
-                }
-            } catch (e: Exception) {
-                android.util.Log.e("LibraryScreen", "加载失败: ${e.message}")
-            }
-            isLoadingMore.value = false
+        if (viewModel.categories.isEmpty()) {
+            android.util.Log.d("LibraryScreen", "=== 开始加载分类 ===")
+            viewModel.loadCategories()
         }
     }
 
-    // 顶部搜索区域 - 高度可调整
+    LaunchedEffect(viewModel.selectedCategory, viewModel.categories.size) {
+        if (!viewModel.isLoadingCategories && 
+            viewModel.selectedCategory != null && 
+            viewModel.selectedCategory!!.isNotEmpty() && 
+            viewModel.categories.isNotEmpty() &&
+            !viewModel.hasLoadedOnce) {
+            android.util.Log.d("LibraryScreen", "=== 加载小说列表 ===")
+            viewModel.currentPage = 1
+            viewModel.hasMore = true
+            viewModel.loadFirstPage()
+            viewModel.hasLoadedOnce = true
+        }
+    }
+
+    LaunchedEffect(listState.layoutInfo.visibleItemsInfo) {
+        val lastVisibleIndex = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+        val totalItems = viewModel.libraryBooks.size
+
+        if (lastVisibleIndex >= totalItems - 2 &&
+            !viewModel.isLoading &&
+            !viewModel.isLoadingMore &&
+            viewModel.hasMore &&
+            totalItems >= 10 &&
+            listState.isScrollInProgress) {
+            
+            coroutineScope.launch {
+                viewModel.loadNextPage()
+            }
+        }
+    }
+
     val searchBarHeight = 80.dp
     
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // ========== 区域1: 顶部搜索栏 ==========
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -220,11 +161,13 @@ fun LibraryScreen(
                         singleLine = true
                     )
                 }
-                IconButton(onClick = { 
-                    currentPage.value = 1
-                    hasMore.value = true
+                IconButton(onClick = {
+                    viewModel.currentPage = 1
+                    viewModel.hasMore = true
+                    viewModel.hasLoadedOnce = false
                     coroutineScope.launch {
-                        loadFirstPage()
+                        viewModel.searchQuery = searchQuery
+                        viewModel.loadFirstPage()
                     }
                 }) {
                     Icon(
@@ -235,41 +178,69 @@ fun LibraryScreen(
                 }
             }
 
-            // ========== 区域2: 中间列表区域 ==========
+            LazyRow(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .background(Color.White)
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(viewModel.categories) { category ->
+                    val isSelected = viewModel.selectedCategory == category.id
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(20.dp))
+                            .background(if (isSelected) Primary else Color(0xFFF5F5F5))
+                            .padding(horizontal = 16.dp, vertical = 6.dp)
+                            .clickable {
+                                viewModel.handleCategoryChange(category.id)
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = category.name,
+                            fontSize = 14.sp,
+                            color = if (isSelected) Color.White else TextPrimary
+                        )
+                    }
+                }
+            }
+
             Box(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
                     .padding(top = 8.dp)
             ) {
-                if (isLoading.value && libraryBooks.isEmpty()) {
+                if (viewModel.isLoading && viewModel.libraryBooks.isEmpty()) {
                     CircularProgressIndicator(
                         color = Primary,
                         modifier = Modifier.align(Alignment.Center)
                     )
-                } else if (libraryBooks.isEmpty()) {
+                } else if (viewModel.libraryBooks.isEmpty()) {
                     Column(
                         modifier = Modifier
                             .align(Alignment.Center)
                             .fillMaxSize()
-                            .clickable { 
-                                // 点击空白处重试
-                                currentPage.value = 1
-                                hasMore.value = true
+                            .clickable {
+                                viewModel.currentPage = 1
+                                viewModel.hasMore = true
+                                viewModel.hasLoadedOnce = false
                                 coroutineScope.launch {
-                                    loadFirstPage()
+                                    viewModel.loadFirstPage()
                                 }
                             },
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center
                     ) {
                         Text(
-                            text = errorMessage.value.ifEmpty { "暂无书籍数据" },
+                            text = viewModel.errorMessage.ifEmpty { "暂无书籍数据" },
                             fontSize = 16.sp,
                             color = TextSecondary,
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center
                         )
-                        if (errorMessage.value.isNotEmpty()) {
+                        if (viewModel.errorMessage.isNotEmpty()) {
                             Text(
                                 text = "点击空白处重试",
                                 fontSize = 14.sp,
@@ -285,27 +256,28 @@ fun LibraryScreen(
                             .fillMaxSize()
                             .padding(bottom = 60.dp)
                     ) {
-                        items(libraryBooks.size) { index ->
+                        items(viewModel.libraryBooks.size) { index ->
+                            val book = viewModel.libraryBooks[index]
                             LibraryBookItem(
-                                book = libraryBooks[index],
-                                isInShelf = shelfBookIds.contains(libraryBooks[index].id) || addedIds.contains(libraryBooks[index].id),
-                                onAddClick = { book ->
-                                    addedIds.add(book.id)
+                                book = book,
+                                isInShelf = shelfBookIds.contains(book.id) || viewModel.addedIds.contains(book.id),
+                                onAddClick = {
+                                    viewModel.addedIds.add(book.id)
                                     onAddToShelf(book)
                                 },
-                                onClick = { onBookClick(libraryBooks[index]) }
+                                onClick = { onBookClick(book) }
                             )
                         }
 
                         item {
-                            if (isLoadingMore.value) {
+                            if (viewModel.isLoadingMore) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth().padding(16.dp),
                                     horizontalArrangement = Arrangement.Center
                                 ) {
                                     CircularProgressIndicator(color = Primary)
                                 }
-                            } else if (!hasMore.value && libraryBooks.isNotEmpty()) {
+                            } else if (!viewModel.hasMore && viewModel.libraryBooks.isNotEmpty()) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth().padding(16.dp),
                                     horizontalArrangement = Arrangement.Center
@@ -327,9 +299,9 @@ fun LibraryScreen(
 
 @Composable
 private fun LibraryBookItem(
-    book: LibraryBook,
+    book: LibraryViewModel.LibraryBook,
     isInShelf: Boolean,
-    onAddClick: (LibraryBook) -> Unit,
+    onAddClick: () -> Unit,
     onClick: () -> Unit
 ) {
     Row(
@@ -374,7 +346,7 @@ private fun LibraryBookItem(
             )
         }
         Button(
-            onClick = { if (!isInShelf) onAddClick(book) },
+            onClick = { if (!isInShelf) onAddClick() },
             enabled = !isInShelf,
             colors = ButtonDefaults.buttonColors(
                 containerColor = if (isInShelf) Color.LightGray else Primary,

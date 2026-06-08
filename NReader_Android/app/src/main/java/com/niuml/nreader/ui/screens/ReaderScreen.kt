@@ -34,9 +34,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
-import androidx.compose.material3.Icon
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -65,12 +62,20 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import com.niuml.nreader.data.Book
 import com.niuml.nreader.data.BackgroundColor
+import com.niuml.nreader.data.DocumentLoader
 import com.niuml.nreader.data.FontSize
 import com.niuml.nreader.data.LineSpacing
 import com.niuml.nreader.data.PageMode
+import com.niuml.nreader.data.ReaderState
 import com.niuml.nreader.data.ReadingSettings
 import com.niuml.nreader.data.StorageManager
-import com.niuml.nreader.service.ApiService
+import com.niuml.nreader.ui.theme.BackgroundCream
+import com.niuml.nreader.ui.theme.BackgroundDark
+import com.niuml.nreader.ui.theme.BackgroundWhite
+import com.niuml.nreader.ui.theme.Primary
+import com.niuml.nreader.ui.theme.TextPrimary
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 import android.content.Context
 import android.graphics.Paint
@@ -80,18 +85,11 @@ import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
 import android.util.Log
-import android.util.TypedValue
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.Timer
 import java.util.TimerTask
-import com.niuml.nreader.ui.theme.BackgroundCream
-import com.niuml.nreader.ui.theme.BackgroundDark
-import com.niuml.nreader.ui.theme.BackgroundWhite
-import com.niuml.nreader.ui.theme.Primary
-import com.niuml.nreader.ui.theme.TextPrimary
-import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -105,23 +103,33 @@ fun ReaderScreen(
     var showToolbar by remember { mutableStateOf(true) }
     var showSettingsDialog by remember { mutableStateOf(false) }
     var showJumpDialog by remember { mutableStateOf(false) }
-    var currentProgress by remember { mutableStateOf(0f) }
-    var textContent by remember { mutableStateOf("") }
     var isLoading by remember { mutableStateOf(false) }
-    var currentPage by remember { mutableIntStateOf(1) }
-    var totalPages by remember { mutableIntStateOf(1) }
-    var hasInitialized by remember { mutableStateOf(false) }
-    var positionRestored by remember { mutableStateOf(false) }
+    
     val context = LocalContext.current
     val storageManager = remember { StorageManager(context) }
+    val readerState = remember { 
+        ReaderState(book.id, storageManager) {
+            loadBookContentSuspend(book, storageManager)
+        }
+    }
 
-    var localFontSize by remember { mutableIntStateOf(settings.fontSize.toSpValue()) }
+   var localFontSize by remember { mutableIntStateOf(settings.fontSize.toSpValue()) }
+    var initialFontSizeSet by remember { mutableStateOf(false) }
+    
+    LaunchedEffect(localFontSize) {
+        Log.d("ReaderScreen", "LaunchedEffect(localFontSize) called, fontSize: $localFontSize, initialFontSizeSet: $initialFontSizeSet")
+        if (initialFontSizeSet) {
+            Log.d("ReaderScreen", "Font size changed, clearing cache")
+            readerState.clearCache()
+        } else {
+            Log.d("ReaderScreen", "Initial font size setup")
+            initialFontSizeSet = true
+        }
+    }
     var localBackgroundColor by remember { mutableStateOf(settings.backgroundColor) }
     var localPageMode by remember { mutableStateOf(settings.pageMode) }
 
     val density = LocalDensity.current.density
-
-    var pageStarts by remember { mutableStateOf(listOf<Int>()) }
 
     val backPressedDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
     val callback = remember {
@@ -131,7 +139,7 @@ fun ReaderScreen(
             }
         }
     }
-    
+
     DisposableEffect(backPressedDispatcher) {
         backPressedDispatcher?.addCallback(callback)
         onDispose {
@@ -140,50 +148,27 @@ fun ReaderScreen(
     }
 
     LaunchedEffect(book) {
-        val cachedContent = storageManager.loadBookContent(book.id)
-        if (cachedContent != null) {
-            textContent = cachedContent
-        } else if (book.filePath.isNotEmpty() && File(book.filePath).exists()) {
-                try {
-                    textContent = storageManager.readTextWithEncoding(File(book.filePath))
-                    storageManager.saveBookContent(book.id, textContent)
-                } catch (e: Exception) {
-                    textContent = "读取文件失败: ${e.message}"
-                }
-            } else {
-            isLoading = true
-            try {
-                val response = ApiService.getNovelContent(book.id.toInt())
-                if (response != null) {
-                    textContent = response.content
-                    storageManager.saveBookContent(book.id, response.content)
-                } else {
-                    textContent = "无法获取小说内容"
-                }
-            } catch (e: Exception) {
-                textContent = "加载失败: ${e.message}"
-            }
-            isLoading = false
+        isLoading = true
+        
+        val hasContentCache = storageManager.hasBookContent(book.id)
+        if (hasContentCache) {
+            Log.d("ReaderScreen", "Content cache exists")
         }
         
-        delay(300)
-        hasInitialized = true
+        if (!readerState.isReady) {
+            readerState.ensureContentLoaded()
+            while (!readerState.isReady) {
+                kotlinx.coroutines.delay(50)
+            }
+        }
+        
+        isLoading = false
     }
 
-    LaunchedEffect(currentPage, hasInitialized, totalPages, positionRestored) {
-        if (hasInitialized && totalPages > 0 && positionRestored) {
-            currentProgress = (currentPage.toFloat() / totalPages.toFloat()) * 100
-            storageManager.saveReadingPosition(book.id, currentPage, 0f)
-            onSaveProgress(book.id, currentProgress.toDouble())
-        }
-    }
-    
     DisposableEffect(Unit) {
         onDispose {
-            if (currentPage > 0 && totalPages > 0) {
-                storageManager.saveReadingPosition(book.id, currentPage, 0f)
-                onSaveProgress(book.id, currentPage.toDouble() / totalPages.toDouble())
-            }
+            readerState.saveProgress()
+            onSaveProgress(book.id, readerState.progress)
         }
     }
 
@@ -199,14 +184,6 @@ fun ReaderScreen(
         TextPrimary
     }
 
-    val fontSizeValue = localFontSize.sp
-
-    val lineSpacingValue = when (settings.lineSpacing) {
-        LineSpacing.COMPACT -> 1.2f
-        LineSpacing.NORMAL -> 1.5f
-        LineSpacing.RELAXED -> 2.0f
-    }
-
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = backgroundColor
@@ -214,166 +191,85 @@ fun ReaderScreen(
         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
             val maxWidthPx = with(LocalDensity.current) { maxWidth.toPx() }
             val maxHeightPx = with(LocalDensity.current) { maxHeight.toPx() }
-            
-            LaunchedEffect(textContent, localFontSize, settings.lineSpacing, hasInitialized, maxHeightPx) {
-                if (textContent.isNotEmpty() && hasInitialized && maxHeightPx > 0) {
-                    val lineSpacingValue = when (settings.lineSpacing) {
+
+            LaunchedEffect(localFontSize, settings.lineSpacing, maxWidthPx, maxHeightPx) {
+                if (maxHeightPx > 0) {
+                    val lineSpacing = when (settings.lineSpacing) {
                         LineSpacing.COMPACT -> 1.2f
                         LineSpacing.NORMAL -> 1.5f
                         LineSpacing.RELAXED -> 2.0f
                     }
                     
-                    val textPaint = TextPaint().apply {
-                        textSize = localFontSize * density
-                        typeface = Typeface.DEFAULT
-                        isAntiAlias = true
-                    }
-                    
-                    val availableWidth = maxWidthPx - 32 * density
-                    val singleLineHeight = textPaint.fontMetrics.let { it.descent - it.ascent }
-                    val availableHeight = maxHeightPx - 32 * density - singleLineHeight
-                    
-                    val pageBreaks = mutableListOf(0)
-                    var pos = 0
-                    
-                    while (pos < textContent.length) {
-                        val endPos = minOf(pos + 5000, textContent.length)
-                        val textChunk = textContent.substring(pos, endPos)
-                        
-                        val layout = StaticLayout.Builder.obtain(
-                            textChunk,
-                            0,
-                            textChunk.length,
-                            textPaint,
-                            availableWidth.toInt()
-                        ).build()
-                        
-                        val lineCount = layout.lineCount
-                        if (lineCount <= 0) break
-                        
-                        var fittedLines = 0
-                        var cumulativeHeight = 0f
-                        
-                        for (i in 0 until lineCount) {
-                            val lineBottom = layout.getLineBottom(i)
-                            if (lineBottom <= availableHeight) {
-                                fittedLines = i + 1
-                                cumulativeHeight = lineBottom.toFloat()
-                            } else {
-                                break
-                            }
-                        }
-                        
-                        if (fittedLines == 0 && lineCount > 0) fittedLines = 1
-                        
-                        val pageEnd = if (fittedLines > 0 && fittedLines <= lineCount) {
-                            layout.getLineEnd(fittedLines - 1)
-                        } else {
-                            layout.getLineEnd(lineCount - 1)
-                        }
-                        
-                        val absoluteEnd = pos + pageEnd
-                        pos = absoluteEnd
-                        
-                        if (pos < textContent.length) {
-                            pageBreaks.add(pos)
-                        }
-                        
-                        if (pageBreaks.size > 1000) break
-                    }
-                    
-                    pageStarts = pageBreaks
-                    totalPages = pageBreaks.size
-                    
-                    Log.d("ReaderScreen", "Pages: $totalPages, height: $maxHeightPx")
-                    
-                    val savedPage = storageManager.loadReadingPage(book.id)
-                    if (savedPage > 0 && savedPage <= totalPages) {
-                        currentPage = savedPage
-                    }
-                    positionRestored = true
+                    Log.d("ReaderScreen", "Calling tryLoadPaginationFromCache - fontSize: $localFontSize, width: $maxWidthPx, height: $maxHeightPx, lineSpacing: $lineSpacing")
+                    val cacheLoaded = readerState.tryLoadPaginationFromCache(
+                        localFontSize,
+                        maxWidthPx,
+                        maxHeightPx,
+                        lineSpacing
+                    )
+                    Log.d("ReaderScreen", "Cache loaded result: $cacheLoaded")
                 }
             }
             
-            if (isLoading || pageStarts.isEmpty()) {
+            LaunchedEffect(readerState.isReady, localFontSize, settings.lineSpacing, maxWidthPx, maxHeightPx) {
+                if (maxHeightPx > 0 && readerState.isReady && !readerState.isPaginationReady) {
+                    readerState.startPageCalculation(
+                        maxWidthPx,
+                        maxHeightPx,
+                        localFontSize,
+                        when (settings.lineSpacing) {
+                            LineSpacing.COMPACT -> 1.2f
+                            LineSpacing.NORMAL -> 1.5f
+                            LineSpacing.RELAXED -> 2.0f
+                        },
+                        density
+                    )
+                }
+            }
+
+            if (isLoading || !readerState.isPaginationReady) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        CircularProgressIndicator(color = Primary)
-                        Text(
-                            text = "加载中...",
-                            fontSize = 16.sp,
-                            color = textColor,
-                            modifier = Modifier.padding(top = 16.dp)
-                        )
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(32.dp)
+                    ) {
+                        if (readerState.isCalculatingPages) {
+                            androidx.compose.material3.LinearProgressIndicator(
+                                progress = readerState.calculationProgress.toFloat(),
+                                color = Primary,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 8.dp)
+                            )
+                            Text(
+                                text = "计算中 ${(readerState.calculationProgress * 100).toInt()}%",
+                                fontSize = 16.sp,
+                                color = textColor,
+                                modifier = Modifier.padding(top = 8.dp)
+                            )
+                        } else {
+                            CircularProgressIndicator(color = Primary)
+                            Text(
+                                text = "加载中...",
+                                fontSize = 16.sp,
+                                color = textColor,
+                                modifier = Modifier.padding(top = 16.dp)
+                            )
+                        }
                     }
                 }
             } else {
                 Box(modifier = Modifier.fillMaxSize()) {
-                    Canvas(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(16.dp)
-                            .pointerInput(Unit) {
-                                var startX = 0f
-                                var totalDiff = 0f
-                                detectDragGestures(
-                                    onDragStart = { offset ->
-                                        startX = offset.x
-                                    },
-                                    onDrag = { _, offset ->
-                                        totalDiff += offset.x
-                                    },
-                                    onDragEnd = {
-                                        if (totalDiff > 50 && currentPage > 1) {
-                                            currentPage--
-                                        } else if (totalDiff < -50 && currentPage < totalPages) {
-                                            currentPage++
-                                        }
-                                        totalDiff = 0f
-                                    }
-                                )
-                            }
-                    ) {
-                        if (currentPage in 1..totalPages) {
-                            val startPos = pageStarts[currentPage - 1]
-                            val endPos = if (currentPage < totalPages) {
-                                pageStarts[currentPage]
-                            } else {
-                                textContent.length
-                            }
-                            
-                            val pageText = textContent.substring(startPos, endPos)
-                            
-                            val textPaint = android.text.TextPaint().apply {
-                                this.textSize = localFontSize * density
-                                typeface = Typeface.DEFAULT
-                                color = android.graphics.Color.argb(
-                                    (255).toInt(),
-                                    (textColor.red * 255).toInt(),
-                                    (textColor.green * 255).toInt(),
-                                    (textColor.blue * 255).toInt()
-                                )
-                                isAntiAlias = true
-                            }
-                            
-                            val canvasWidth = maxWidthPx - 32 * density
-                            
-                            val layout = StaticLayout.Builder.obtain(
-                                pageText,
-                                0,
-                                pageText.length,
-                                textPaint,
-                                canvasWidth.toInt()
-                            ).build()
-                            
-                            val lineHeight = textPaint.fontMetrics.let { it.descent - it.ascent }
-                            
-                            drawContext.canvas.nativeCanvas.save()
-                            drawContext.canvas.nativeCanvas.translate(0f, lineHeight)
-                            layout.draw(drawContext.canvas.nativeCanvas)
-                            drawContext.canvas.nativeCanvas.restore()
-                        }
-                    }
+                    ReaderCanvas(
+                        readerState = readerState,
+                        maxWidthPx = maxWidthPx,
+                        maxHeightPx = maxHeightPx,
+                        fontSize = localFontSize,
+                        textColor = textColor,
+                        density = density,
+                        onPrevPage = { readerState.prevPage() },
+                        onNextPage = { readerState.nextPage() }
+                    )
 
                     Box(modifier = Modifier.fillMaxSize()) {
                         Row(modifier = Modifier.fillMaxSize()) {
@@ -385,9 +281,7 @@ fun ReaderScreen(
                                         indication = null,
                                         interactionSource = remember { MutableInteractionSource() }
                                     ) {
-                                        if (currentPage > 1) {
-                                            currentPage--
-                                        }
+                                        readerState.prevPage()
                                     }
                             )
                             Box(
@@ -409,9 +303,7 @@ fun ReaderScreen(
                                         indication = null,
                                         interactionSource = remember { MutableInteractionSource() }
                                     ) {
-                                        if (currentPage < totalPages) {
-                                            currentPage++
-                                        }
+                                        readerState.nextPage()
                                     }
                             )
                         }
@@ -446,7 +338,11 @@ fun ReaderScreen(
                         .zIndex(1f),
                     verticalArrangement = Arrangement.Bottom
                 ) {
-                    BottomBar(currentPage, totalPages, textColor) {
+                    BottomBar(
+                        currentPage = readerState.currentPage,
+                        totalPages = readerState.totalPages,
+                        textColor = textColor
+                    ) {
                         showJumpDialog = true
                     }
                 }
@@ -459,9 +355,7 @@ fun ReaderScreen(
                     pageMode = localPageMode,
                     onFontSizeChange = { localFontSize = it },
                     onBackgroundColorChange = { localBackgroundColor = it },
-                    onPageModeChange = {
-                        localPageMode = it
-                    },
+                    onPageModeChange = { localPageMode = it },
                     onConfirm = {
                         val newSettings = ReadingSettings(
                             fontSize = localFontSize.toFontSize(),
@@ -484,12 +378,10 @@ fun ReaderScreen(
 
             if (showJumpDialog) {
                 JumpToPageDialog(
-                    currentPage = currentPage,
-                    totalPages = totalPages,
+                    currentPage = readerState.currentPage,
+                    totalPages = readerState.totalPages,
                     onConfirm = { page ->
-                        if (page in 1..totalPages) {
-                            currentPage = page
-                        }
+                        readerState.goToPage(page)
                         showJumpDialog = false
                     },
                     onCancel = {
@@ -497,6 +389,127 @@ fun ReaderScreen(
                     }
                 )
             }
+        }
+    }
+}
+
+private suspend fun loadBookContentSuspend(book: Book, storageManager: StorageManager): String {
+    return withContext(Dispatchers.IO) {
+        val cachedContent = storageManager.loadBookContent(book.id)
+        if (cachedContent != null) {
+            return@withContext cachedContent
+        }
+
+        if (book.filePath.isNotEmpty() && File(book.filePath).exists()) {
+            try {
+                val loader = DocumentLoader(File(book.filePath))
+                val result = loader.loadSync()
+                val content = result.content
+                storageManager.saveBookContent(book.id, content)
+                return@withContext content
+            } catch (e: Exception) {
+                return@withContext "读取文件失败: ${e.message}"
+            }
+        }
+        return@withContext ""
+    }
+}
+
+private suspend fun loadBookContent(
+    book: Book,
+    storageManager: StorageManager,
+    onContentLoaded: (String) -> Unit
+) {
+    withContext(Dispatchers.IO) {
+        val cachedContent = storageManager.loadBookContent(book.id)
+        if (cachedContent != null) {
+            onContentLoaded(cachedContent)
+            return@withContext
+        }
+
+        if (book.filePath.isNotEmpty() && File(book.filePath).exists()) {
+            try {
+                val loader = DocumentLoader(File(book.filePath))
+                val result = loader.load()
+                val content = result.content
+                storageManager.saveBookContent(book.id, content)
+                onContentLoaded(content)
+            } catch (e: Exception) {
+                onContentLoaded("读取文件失败: ${e.message}")
+            }
+        }
+    }
+}
+
+@Composable
+fun ReaderCanvas(
+    readerState: ReaderState,
+    maxWidthPx: Float,
+    maxHeightPx: Float,
+    fontSize: Int,
+    textColor: Color,
+    density: Float,
+    onPrevPage: () -> Unit,
+    onNextPage: () -> Unit
+) {
+
+    Canvas(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+            .pointerInput(Unit) {
+                var startX = 0f
+                var totalDiff = 0f
+                detectDragGestures(
+                    onDragStart = { offset ->
+                        startX = offset.x
+                    },
+                    onDrag = { _, offset ->
+                        totalDiff += offset.x
+                    },
+                    onDragEnd = {
+                        if (totalDiff > 50 && readerState.currentPage > 1) {
+                            onPrevPage()
+                        } else if (totalDiff < -50 && readerState.currentPage < readerState.totalPages) {
+                            onNextPage()
+                        }
+                        totalDiff = 0f
+                    }
+                )
+            }
+    ) {
+        val pageText = readerState.getCurrentPageText()
+        
+        if (pageText.isNotEmpty()) {
+
+            val textPaint = android.text.TextPaint().apply {
+                this.textSize = fontSize * density
+                typeface = Typeface.DEFAULT
+                color = android.graphics.Color.argb(
+                    255,
+                    (textColor.red * 255).toInt(),
+                    (textColor.green * 255).toInt(),
+                    (textColor.blue * 255).toInt()
+                )
+                isAntiAlias = true
+            }
+
+            val canvasWidth = maxWidthPx - 32 * density
+
+            val layout = StaticLayout.Builder.obtain(
+                pageText,
+                0,
+                pageText.length,
+                textPaint,
+                canvasWidth.toInt()
+            ).build()
+
+            val lineHeight = textPaint.fontMetrics.let { it.descent - it.ascent }
+
+            drawContext.canvas.nativeCanvas.save()
+            drawContext.canvas.nativeCanvas.translate(0f, lineHeight)
+            layout.draw(drawContext.canvas.nativeCanvas)
+            drawContext.canvas.nativeCanvas.restore()
         }
     }
 }
@@ -579,7 +592,7 @@ private fun BottomBar(currentPage: Int, totalPages: Int, textColor: Color, onPag
             override fun run() {
                 val df = SimpleDateFormat("HH:mm", Locale.getDefault())
                 currentTime.value = df.format(Date())
-                
+
                 val batteryManager = context.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
                 batteryLevel.value = batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
             }

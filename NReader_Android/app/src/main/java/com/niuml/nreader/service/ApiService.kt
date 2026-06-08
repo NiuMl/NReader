@@ -15,6 +15,8 @@ import java.io.IOException
 object ApiService {
     private var baseUrl = "http://192.168.1.8:5000/api"
     private var token: String? = null
+    private var username: String = ""
+    private var password: String = ""
     private lateinit var sharedPreferences: SharedPreferences
     
     fun init(context: Context) {
@@ -45,18 +47,48 @@ object ApiService {
         sharedPreferences.edit().remove("token").apply()
     }
     
+    fun setCredentials(user: String, pass: String) {
+        username = user
+        password = pass
+    }
+    
     private val authInterceptor = Interceptor { chain ->
         val originalRequest = chain.request()
         
         if (!originalRequest.url.pathSegments.contains("login") && !originalRequest.url.pathSegments.contains("health")) {
-            val requestWithAuth = originalRequest.newBuilder()
+            var requestWithAuth = originalRequest.newBuilder()
                 .header("Authorization", token ?: "")
                 .build()
-            val response = chain.proceed(requestWithAuth)
+            var response = chain.proceed(requestWithAuth)
             
-            if (response.code == 401) {
-                token = null
-                sharedPreferences.edit().remove("token").apply()
+            if (response.code == 401 && username.isNotEmpty() && password.isNotEmpty()) {
+                response.close()
+                
+                val jsonBody = """{"username": "$username", "password": "$password"}"""
+                val loginRequest = Request.Builder()
+                    .url("${baseUrl.replace("/api", "")}/api/login")
+                    .post(okhttp3.RequestBody.create("application/json".toMediaType(), jsonBody))
+                    .build()
+                
+                try {
+                    val loginResponse = chain.proceed(loginRequest)
+                    if (loginResponse.isSuccessful && loginResponse.body != null) {
+                        val jsonString = loginResponse.body!!.string()
+                        val loginResult = gson.fromJson(jsonString, LoginResponse::class.java)
+                        
+                        if (loginResult.code == 0 && loginResult.token != null) {
+                            saveToken(loginResult.token)
+                            
+                            requestWithAuth = originalRequest.newBuilder()
+                                .header("Authorization", loginResult.token)
+                                .build()
+                            response = chain.proceed(requestWithAuth)
+                        }
+                    }
+                    loginResponse.close()
+                } catch (e: IOException) {
+                    android.util.Log.e("ApiService", "Auto login failed", e)
+                }
             }
             
             return@Interceptor response
@@ -103,6 +135,16 @@ object ApiService {
         val content: String
     )
 
+    data class Category(
+        val id: String,
+        val name: String
+    )
+
+    data class CategoryResponse(
+        val code: Int,
+        val categories: List<Category>
+    )
+
     suspend fun login(username: String, password: String): LoginResponse? {
         return withContext(Dispatchers.IO) {
             val url = "${baseUrl.replace("/api", "")}/api/login"
@@ -138,10 +180,40 @@ object ApiService {
         }
     }
 
-    suspend fun getNovels(page: Int = 1, pageSize: Int = 10, search: String = ""): NovelResponse? {
+    suspend fun getCategories(): CategoryResponse? {
+        return withContext(Dispatchers.IO) {
+            val url = "$baseUrl/categories"
+            
+            val request = Request.Builder()
+                .url(url)
+                .get()
+                .build()
+
+            try {
+                val response: Response = client.newCall(request).execute()
+                
+                if (response.isSuccessful && response.body != null) {
+                    val jsonString = response.body!!.string()
+                    gson.fromJson(jsonString, CategoryResponse::class.java)
+                } else {
+                    android.util.Log.d("ApiService", "getCategories failed: ${response.code}")
+                    null
+                }
+            } catch (e: IOException) {
+                android.util.Log.e("ApiService", "getCategories failed", e)
+                null
+            }
+        }
+    }
+
+    suspend fun getNovels(page: Int = 1, pageSize: Int = 10, search: String = "", category: String = ""): NovelResponse? {
         android.util.Log.d("ApiService", "=== getNovels 被调用 ===")
         return withContext(Dispatchers.IO) {
-            val url = "$baseUrl/novels?page=$page&page_size=$pageSize${if (search.isNotEmpty()) "&search=$search" else ""}"
+            val url = buildString {
+                append("$baseUrl/novels?page=$page&page_size=$pageSize")
+                if (search.isNotEmpty()) append("&search=$search")
+                if (category.isNotEmpty()) append("&category=$category")
+            }
             android.util.Log.d("ApiService", "请求URL: $url")
             
             val request = Request.Builder()
