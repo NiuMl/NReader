@@ -8,6 +8,8 @@ import hashlib
 import uuid
 from datetime import datetime, timedelta
 
+from epub_parser import EpubParser
+
 app = Flask(__name__)
 app.secret_key = 'nreader_secret_key'
 CORS(app)
@@ -42,6 +44,23 @@ def init_db():
                 VALUES (?, ?, ?)
             ''', (file.stem, file_path_str, '未分类'))
         
+        for file in NOVELS_DIR.glob('*.epub'):
+            file_path_str = str(file).replace("\\", "/")
+            try:
+                parser = EpubParser(file_path_str)
+                title, author, _, _, _ = parser.parse()
+                if not author:
+                    author = '本地文件'
+                cursor.execute('''
+                    INSERT INTO novels (title, author, file_path, category)
+                    VALUES (?, ?, ?, ?)
+                ''', (title, author, file_path_str, '未分类'))
+            except Exception as e:
+                cursor.execute('''
+                    INSERT INTO novels (title, file_path, category)
+                    VALUES (?, ?, ?)
+                ''', (file.stem, file_path_str, '未分类'))
+        
         for category_dir in NOVELS_DIR.iterdir():
             if category_dir.is_dir():
                 category_name = category_dir.name
@@ -51,6 +70,23 @@ def init_db():
                         INSERT INTO novels (title, file_path, category)
                         VALUES (?, ?, ?)
                     ''', (file.stem, file_path_str, category_name))
+                
+                for file in category_dir.glob('*.epub'):
+                    file_path_str = str(file).replace("\\", "/")
+                    try:
+                        parser = EpubParser(file_path_str)
+                        title, author, _, _, _ = parser.parse()
+                        if not author:
+                            author = '本地文件'
+                        cursor.execute('''
+                            INSERT INTO novels (title, author, file_path, category)
+                            VALUES (?, ?, ?, ?)
+                        ''', (title, author, file_path_str, category_name))
+                    except Exception as e:
+                        cursor.execute('''
+                            INSERT INTO novels (title, file_path, category)
+                            VALUES (?, ?, ?)
+                        ''', (file.stem, file_path_str, category_name))
     
     cursor.execute('''CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -247,13 +283,27 @@ def get_novel_content(novel_id):
         return jsonify({'error': 'File not found'}), 404
     
     try:
-        content = read_file_with_encoding(file_path)
-        
-        return jsonify({
-            'id': str(novel_id),
-            'title': title,
-            'content': content
-        })
+        if file_path.suffix.lower() == '.epub':
+            parser = EpubParser(str(file_path))
+            epub_title, author, chapters, total_words, cover_data = parser.parse()
+            
+            content = '\n\n'.join(chapter['content'] for chapter in chapters)
+            
+            return jsonify({
+                'id': str(novel_id),
+                'title': epub_title if epub_title else title,
+                'author': author if author else '',
+                'content': content,
+                'chapters': chapters
+            })
+        else:
+            content = read_file_with_encoding(file_path)
+            
+            return jsonify({
+                'id': str(novel_id),
+                'title': title,
+                'content': content
+            })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

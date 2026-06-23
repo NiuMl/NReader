@@ -5,6 +5,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.niuml.nreader.parser.BookParser
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -12,17 +13,19 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.io.File
 
 class ReaderState(
     private val bookId: String,
     private val storageManager: StorageManager,
-    private val contentProvider: suspend () -> String
+    private val contentProvider: suspend () -> String,
+    private val bookFilePath: String = ""
 ) {
     var currentPage by mutableIntStateOf(1)
     var totalPages by mutableIntStateOf(1)
     var isEstimatedTotalPages by mutableStateOf(false)
     var currentChapterIndex by mutableIntStateOf(0)
-    var chapters by mutableStateOf<List<ChapterParser.Chapter>>(emptyList())
+    var chapters by mutableStateOf<List<ChapterInfo>>(emptyList())
     var progress by mutableStateOf(0.0)
     var isLoading by mutableStateOf(false)
     var error by mutableStateOf<String?>(null)
@@ -41,9 +44,21 @@ class ReaderState(
     private var lastDensity = 0f
     private val backgroundScope = CoroutineScope(Dispatchers.Default)
     private var savedPage = 1
+    private var isEpubBook = false
     
     init {
         loadSavedProgress()
+        checkBookFormat()
+    }
+    
+    private fun checkBookFormat() {
+        if (bookFilePath.isNotEmpty()) {
+            val file = File(bookFilePath)
+            if (file.exists()) {
+                isEpubBook = bookFilePath.lowercase().endsWith(".epub")
+                Log.d("ReaderState", "Detected book format: ${if (isEpubBook) "EPUB" else "TXT"}")
+            }
+        }
     }
     
     fun initialize(maxWidthPx: Float, maxHeightPx: Float, fontSize: Int, lineSpacing: Float, density: Float) {
@@ -231,9 +246,13 @@ class ReaderState(
         }
         
         try {
-            content = contentProvider()
-            if (content.isNotEmpty()) {
-                storageManager.saveBookContent(bookId, content)
+            if (isEpubBook && bookFilePath.isNotEmpty()) {
+                loadEpubContent()
+            } else {
+                content = contentProvider()
+                if (content.isNotEmpty()) {
+                    storageManager.saveBookContent(bookId, content)
+                }
             }
             isReady = true
             parseChaptersAsync()
@@ -254,23 +273,86 @@ class ReaderState(
                 return@launch
             }
             
-            content = contentProvider()
-            if (content.isNotEmpty()) {
-                storageManager.saveBookContent(bookId, content)
+            if (isEpubBook && bookFilePath.isNotEmpty()) {
+                loadEpubContent()
+            } else {
+                content = contentProvider()
+                if (content.isNotEmpty()) {
+                    storageManager.saveBookContent(bookId, content)
+                }
             }
             isReady = true
             parseChaptersAsync()
         }
     }
+    
+    private suspend fun loadEpubContent() {
+        withContext(Dispatchers.IO) {
+            try {
+                val file = File(bookFilePath)
+                if (!file.exists()) {
+                    Log.e("ReaderState", "EPUB file not found: $bookFilePath")
+                    return@withContext
+                }
+                
+                val parser = BookParser.create(file)
+                val bookInfo = parser.parse()
+                
+                content = bookInfo.chapters.joinToString("\n\n") { it.getContent() }
+                
+                if (content.isNotEmpty()) {
+                    storageManager.saveBookContent(bookId, content)
+                }
+                
+                val epubChapters = bookInfo.chapters.mapIndexed { index, chapter ->
+                    var charOffset = 0
+                    for (i in 0 until index) {
+                        charOffset += bookInfo.chapters[i].getContent().length + 2
+                    }
+                    ChapterInfo(
+                        title = chapter.getTitle(),
+                        startPos = charOffset.toLong(),
+                        endPos = (charOffset + chapter.getContent().length).toLong(),
+                        isVolume = false,
+                        detected = true
+                    )
+                }
+                
+                withContext(Dispatchers.Main) {
+                    chapters = epubChapters
+                }
+                
+                Log.d("ReaderState", "Loaded EPUB with ${epubChapters.size} chapters")
+            } catch (e: Exception) {
+                Log.e("ReaderState", "Failed to load EPUB content", e)
+            }
+        }
+    }
 
     private fun parseChaptersAsync() {
+        if (isEpubBook) {
+            return
+        }
+        
         backgroundScope.launch {
             if (content.isEmpty()) return@launch
             
             try {
                 val language = detectLanguage(content)
                 val parser = ChapterParser(content, language)
-                chapters = parser.parse()
+                val parsedChapters = parser.parse()
+                val convertedChapters = parsedChapters.map {
+                    ChapterInfo(
+                        title = it.title,
+                        startPos = it.startPos.toLong(),
+                        endPos = it.endPos.toLong(),
+                        isVolume = it.isVolume,
+                        detected = it.detected
+                    )
+                }
+                withContext(Dispatchers.Main) {
+                    chapters = convertedChapters
+                }
                 Log.d("ReaderState", "Parsed ${chapters.size} chapters")
             } catch (e: Exception) {
                 Log.e("ReaderState", "Failed to parse chapters", e)
@@ -378,7 +460,7 @@ class ReaderState(
             
             var closestPage = 1
             for ((pageIndex, startPos) in pageStarts.withIndex()) {
-                if (startPos <= chapter.startPos) {
+                if (startPos.toLong() <= chapter.startPos) {
                     closestPage = pageIndex + 1
                 } else {
                     break
@@ -391,7 +473,7 @@ class ReaderState(
         }
     }
 
-    fun getCurrentChapter(): ChapterParser.Chapter? {
+    fun getCurrentChapter(): ChapterInfo? {
         return chapters.getOrNull(currentChapterIndex)
     }
 
@@ -518,15 +600,23 @@ class ReaderState(
         return chapters.getOrNull(currentChapterIndex)?.title ?: ""
     }
 
-    fun getChapterForPage(page: Int): ChapterParser.Chapter? {
+    fun getChapterForPage(page: Int): ChapterInfo? {
         if (page < 1 || page > totalPages || chapters.isEmpty()) return null
         
-        val pageStartPos = pageStarts.getOrNull(page - 1) ?: 0
+        val pageStartPos = pageStarts.getOrNull(page - 1)?.toLong() ?: 0L
         
         return chapters.find { chapter ->
             pageStartPos >= chapter.startPos && pageStartPos < chapter.endPos
         } ?: chapters.lastOrNull()
     }
+    
+    data class ChapterInfo(
+        val title: String,
+        val startPos: Long,
+        val endPos: Long,
+        val isVolume: Boolean = false,
+        val detected: Boolean = false
+    )
     
     @Serializable
     private data class PaginationCache(

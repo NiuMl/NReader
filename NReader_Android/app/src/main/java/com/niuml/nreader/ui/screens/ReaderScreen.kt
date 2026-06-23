@@ -109,9 +109,9 @@ fun ReaderScreen(
     val context = LocalContext.current
     val storageManager = remember { StorageManager(context) }
     val readerState = remember { 
-        ReaderState(book.id, storageManager) {
+        ReaderState(book.id, storageManager, {
             loadBookContentSuspend(book, storageManager)
-        }
+        }, book.filePath)
     }
 
    var localFontSize by remember { mutableIntStateOf(settings.fontSize.toSpValue()) }
